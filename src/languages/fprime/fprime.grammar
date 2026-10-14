@@ -80,7 +80,7 @@ Identifier {
 
   // Comments start with semicolon
   LineComment {
-    ";" ![\n\r]*
+    $[ \t]* ";" ![\n\r]*
   }
 
   newLine {
@@ -93,4 +93,5 @@ Identifier {
 
   @precedence { newLine, whiteSpace }
   @precedence { TimeAbsolute, TimeRelative, commandIdentifier }
+  @precedence { LineComment, whiteSpace }
 }

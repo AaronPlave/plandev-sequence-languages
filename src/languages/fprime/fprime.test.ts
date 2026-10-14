@@ -60,6 +60,58 @@ describe('F-Prime Sequence Parser', () => {
     expect(foundComment).toBe(true);
   });
 
+  it('should parse command with args and space before comment', () => {
+    const input = 'R00:00:05.000 SET_VALUE 42, 3.14   ; comment with leading spaces\n';
+    const tree = fprimeParser.parse(input);
+    const cursor = tree.cursor();
+
+    expect(tree.length).toBe(input.length);
+    cursor.firstChild(); // Command
+    expect(cursor.node.type.name).toBe(FPRIME_NODES.Command);
+
+    // Find LineComment and verify it includes the leading spaces
+    cursor.firstChild(); // Enter Command's children
+    let foundComment = false;
+    do {
+      if (cursor.node.type.name === FPRIME_NODES.LineComment) {
+        foundComment = true;
+        const commentText = input.slice(cursor.from, cursor.to);
+        expect(commentText).toContain('; comment with leading spaces');
+        // The LineComment token should include the leading whitespace
+        expect(commentText).toMatch(/^\s*;/);
+        break;
+      }
+    } while (cursor.nextSibling());
+
+    expect(foundComment).toBe(true);
+  });
+
+  it('should parse command with no args and space before comment', () => {
+    const input = 'A2015-075T22:32:40.123 CMD_NO_OP  ; no args, just comment\n';
+    const tree = fprimeParser.parse(input);
+    const cursor = tree.cursor();
+
+    expect(tree.length).toBe(input.length);
+    cursor.firstChild(); // Command
+    expect(cursor.node.type.name).toBe(FPRIME_NODES.Command);
+
+    // Find LineComment and verify it includes the leading spaces
+    cursor.firstChild(); // Enter Command's children
+    let foundComment = false;
+    do {
+      if (cursor.node.type.name === FPRIME_NODES.LineComment) {
+        foundComment = true;
+        const commentText = input.slice(cursor.from, cursor.to);
+        expect(commentText).toContain('; no args, just comment');
+        // The LineComment token should include the leading whitespace
+        expect(commentText).toMatch(/^\s*;/);
+        break;
+      }
+    } while (cursor.nextSibling());
+
+    expect(foundComment).toBe(true);
+  });
+
   it('should parse comment-only line', () => {
     const input = '; This is a comment\n';
     const tree = fprimeParser.parse(input);
