@@ -48,19 +48,68 @@ export function fprimeLinter(view: EditorView, commandDictionary?: CommandDictio
     },
   });
 
-  return diagnostics;
+  // Deduplicate diagnostics per line - if a line has a specific error message,
+  // remove generic "Syntax error" messages from that line to avoid hiding the details
+  return deduplicateDiagnostics(diagnostics, view);
+}
+
+/**
+ * Deduplicates diagnostics per line, removing generic errors when specific ones exist.
+ */
+function deduplicateDiagnostics(diagnostics: Diagnostic[], view: EditorView): Diagnostic[] {
+  // Group diagnostics by line number
+  const diagnosticsByLine = new Map<number, Diagnostic[]>();
+  for (const diag of diagnostics) {
+    const line = view.state.doc.lineAt(diag.from).number;
+    if (!diagnosticsByLine.has(line)) {
+      diagnosticsByLine.set(line, []);
+    }
+    diagnosticsByLine.get(line)!.push(diag);
+  }
+
+  // For each line, if there's a specific error message, remove generic "Syntax error" messages
+  const filtered: Diagnostic[] = [];
+  for (const diags of diagnosticsByLine.values()) {
+    const hasSpecificError = diags.some(d => d.message !== 'Syntax error');
+    if (hasSpecificError) {
+      // Keep only non-generic errors
+      filtered.push(...diags.filter(d => d.message !== 'Syntax error'));
+    } else {
+      // Keep all errors (they're all generic)
+      filtered.push(...diags);
+    }
+  }
+
+  return filtered;
 }
 
 /**
  * Creates a diagnostic for parse errors, attempting to provide helpful messages.
  */
-function createErrorDiagnostic(node: SyntaxNode, text: string, _view: EditorView): Diagnostic | null {
+function createErrorDiagnostic(node: SyntaxNode, text: string, view: EditorView): Diagnostic | null {
   // Get context around the error
   const parent = node.parent;
   const prevSibling = node.prevSibling;
 
   let message = 'Syntax error';
   const severity: 'error' | 'warning' = 'error';
+
+  // Check if error looks like a malformed time tag
+  // Time tags must be at the start of a line (after optional whitespace)
+  const lineStart = view.state.doc.lineAt(node.from).from;
+  const textBeforeError = view.state.sliceDoc(lineStart, node.from);
+
+  // Only check for malformed time tags if there's only whitespace before the error
+  if (text.trim() && !/\S/.test(textBeforeError)) {
+    const trimmed = text.trim();
+
+    // Check if line starts with something that looks like a malformed time tag
+    if (/^A\d+/.test(trimmed)) {
+      message = 'Invalid absolute time format. Expected: AYYYY-DDDTHH:MM:SS[.sss]';
+    } else if (/^R\d+/.test(trimmed)) {
+      message = 'Invalid relative time format. Expected: RHH:MM:SS[.sss]';
+    }
+  }
 
   // Try to provide more specific error messages based on context
   if (parent?.name === FPRIME_NODES.Args) {
