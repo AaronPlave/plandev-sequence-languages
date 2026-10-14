@@ -170,4 +170,162 @@ R00:00:01.000 CMD 1, 2, 3
       expect(diagnostics[0].message).toContain('seconds');
     });
   });
+
+  describe('command dictionary validation', () => {
+    const mockCommandDictionary = {
+      fswCommandMap: {
+        'CMD_NO_OP': {
+          stem: 'CMD_NO_OP',
+          arguments: [],
+        },
+        'SET_VALUE': {
+          stem: 'SET_VALUE',
+          arguments: [
+            { name: 'value', arg_type: 'integer' },
+            { name: 'multiplier', arg_type: 'float' },
+          ],
+        },
+      },
+      hwCommandMap: {},
+      fswCommands: [
+        { stem: 'CMD_NO_OP' },
+        { stem: 'SET_VALUE' },
+      ],
+      hwCommands: [],
+      enumMap: {},
+    };
+
+    function lintWithDict(doc: string) {
+      const fprimeLanguage = LRLanguage.define({
+        parser: fprimeParser,
+      });
+
+      const state = EditorState.create({
+        doc,
+        extensions: [new LanguageSupport(fprimeLanguage)],
+      });
+
+      const view = { state } as EditorView;
+      return fprimeLinter(view, mockCommandDictionary);
+    }
+
+    it('should not flag valid command in dictionary', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_OP\n');
+      expect(diagnostics.length).toBe(0);
+    });
+
+    it('should flag command not in dictionary', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 INVALID_CMD\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('not found in command dictionary');
+    });
+
+    it('should provide suggestions for misspelled commands', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_OPP\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].actions).toBeDefined();
+      expect(diagnostics[0].actions?.length).toBeGreaterThan(0);
+    });
+
+    it('should flag too many arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_OP 42, 3.14, "extra"\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Extra');
+    });
+
+    it('should flag too few arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 SET_VALUE 42\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Missing');
+    });
+
+    it('should not flag correct number of arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 SET_VALUE 42, 3.14\n');
+      expect(diagnostics.length).toBe(0);
+    });
+
+    it('should provide quick fix for removing extra arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_OP 42, 3.14\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].actions).toBeDefined();
+      expect(diagnostics[0].actions?.length).toBeGreaterThan(0);
+      expect(diagnostics[0].actions?.[0].name).toContain('Remove');
+    });
+
+    it('should not count comments as extra arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_OP; this is a comment\n');
+      // Should have no errors - comment should not be counted as an argument
+      expect(diagnostics.length).toBe(0);
+    });
+  });
+
+  describe('malformed time tag detection', () => {
+    it('should flag malformed absolute time with wrong day digits', () => {
+      const diagnostics = lint('A2026-75T21:12:40.123 CMD\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Invalid absolute time format');
+      expect(diagnostics[0].message).toContain('AYYYY-DDDTHH:MM:SS');
+    });
+
+    it('should flag malformed absolute time with slash separator', () => {
+      const diagnostics = lint('A2026/075T21:12:40 CMD\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Invalid absolute time format');
+    });
+
+    it('should flag malformed relative time with wrong hour digits', () => {
+      const diagnostics = lint('R1:00:00 CMD\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Invalid relative time format');
+      expect(diagnostics[0].message).toContain('RHH:MM:SS');
+    });
+
+    it('should flag malformed relative time with three digit hours', () => {
+      const diagnostics = lint('R100:00:00 CMD\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).toContain('Invalid relative time format');
+    });
+
+    it('should only show one error for malformed time tag (deduplication)', () => {
+      const diagnostics = lint('A2026-75T21:12:40.123 CMD\n');
+      // Should have one specific error, not multiple generic "Syntax error" messages
+      expect(diagnostics.length).toBe(1);
+      expect(diagnostics[0].message).not.toBe('Syntax error');
+    });
+
+    it('should not flag malformed time patterns in command arguments', () => {
+      const diagnostics = lint('R00:00:01.000 CMD A2026-75\n');
+      // Should flag as invalid command syntax or missing comma, not as malformed time tag
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].message).not.toContain('Invalid absolute time format');
+    });
+  });
+
+  describe('diagnostic deduplication', () => {
+    it('should remove generic errors when specific errors exist on same line', () => {
+      const diagnostics = lint('A2026-75T21:12:40 CMD\n');
+      // Should only have the specific time format error, not generic syntax errors
+      const syntaxErrors = diagnostics.filter(d => d.message === 'Syntax error');
+      expect(syntaxErrors.length).toBe(0);
+    });
+
+    it('should keep generic errors when no specific errors exist', () => {
+      const diagnostics = lint('@@@ invalid\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      // All errors might be generic for completely invalid syntax
+    });
+
+    it('should deduplicate per line independently', () => {
+      const doc = `A2026-75T21:12:40 CMD
+R00:00:01.000 CMD 1 2
+`;
+      const diagnostics = lint(doc);
+      // Line 1: should have time format error
+      // Line 2: should have comma error
+      const timeErrors = diagnostics.filter(d => d.message.includes('time format'));
+      const commaErrors = diagnostics.filter(d => d.message.includes('comma'));
+      expect(timeErrors.length).toBeGreaterThan(0);
+      expect(commaErrors.length).toBeGreaterThan(0);
+    });
+  });
 });
