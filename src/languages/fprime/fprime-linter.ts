@@ -359,6 +359,16 @@ export function validateCommandDictionary(
         message: `Missing ${commandArgs}, definition has ${expectedArgCount}, but ${actualArgCount} ${pluralize(actualArgCount) ? 'are' : 'is'} present`,
         source: 'fprime-linter',
       });
+    } else {
+      // Correct number of arguments - validate types and values
+      for (let i = 0; i < argNodes.length; i++) {
+        const argNode = argNodes[i];
+        const argDef = dictionaryCommand.arguments?.[i];
+        if (argDef) {
+          const argDiagnostics = validateArgument(argNode, argDef, view, commandDictionary);
+          diagnostics.push(...argDiagnostics);
+        }
+      }
     }
   } else if (expectedArgCount > 0) {
     // No arguments provided but command expects some
@@ -371,6 +381,189 @@ export function validateCommandDictionary(
       message: `Missing ${commandArgs}, definition has ${expectedArgCount}, but 0 are present`,
       source: 'fprime-linter',
     });
+  }
+
+  return diagnostics;
+}
+
+/**
+ * Validates an individual argument against its command dictionary definition.
+ */
+function validateArgument(
+  argNode: SyntaxNode,
+  argDef: { arg_type: string; name: string; range?: { min: number; max: number } | string[] | null; enum_name?: string },
+  view: EditorView,
+  commandDictionary: CommandDictionary,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const argText = view.state.sliceDoc(argNode.from, argNode.to);
+  const argType = argNode.name;
+
+  switch (argDef.arg_type) {
+    case 'integer':
+    case 'unsigned':
+    case 'float':
+    case 'numeric': {
+      // Check if the argument is a number
+      if (argType !== FPRIME_NODES.Number) {
+        diagnostics.push({
+          from: argNode.from,
+          to: argNode.to,
+          severity: 'error',
+          message: `Incorrect type - expected number but got ${argType}`,
+          source: 'fprime-linter',
+        });
+        break;
+      }
+
+      // Validate numeric range if specified (range is an object for numeric types, not a string array)
+      if (argDef.range && !Array.isArray(argDef.range)) {
+        const { min, max } = argDef.range;
+        // Parse numeric value, handling hex (0x prefix)
+        const numValue = argText.toLowerCase().startsWith('0x')
+          ? Number.parseInt(argText, 16)
+          : argDef.arg_type === 'float' || argDef.arg_type === 'numeric'
+            ? Number.parseFloat(argText)
+            : Number.parseInt(argText, 10);
+
+        if (Number.isNaN(numValue)) {
+          diagnostics.push({
+            from: argNode.from,
+            to: argNode.to,
+            severity: 'error',
+            message: `Invalid number format: ${argText}`,
+            source: 'fprime-linter',
+          });
+        } else if (numValue < min || numValue > max) {
+          const message =
+            max !== min
+              ? `Number out of range. Expected ${min} to ${max}, got ${numValue}`
+              : `Number out of range. Expected ${min}`;
+
+          diagnostics.push({
+            from: argNode.from,
+            to: argNode.to,
+            severity: 'error',
+            message,
+            source: 'fprime-linter',
+          });
+        }
+      }
+      break;
+    }
+
+    case 'boolean': {
+      // F-Prime booleans can be represented as strings "TRUE"/"FALSE" or identifiers
+      if (argType === FPRIME_NODES.String) {
+        const unquoted = argText.replace(/^"|"$/g, '');
+        if (unquoted !== 'TRUE' && unquoted !== 'FALSE') {
+          diagnostics.push({
+            from: argNode.from,
+            to: argNode.to,
+            severity: 'error',
+            message: `Invalid boolean value. Expected "TRUE" or "FALSE", got ${argText}`,
+            source: 'fprime-linter',
+          });
+        }
+      } else if (argType === FPRIME_NODES.Identifier) {
+        if (argText !== 'TRUE' && argText !== 'FALSE') {
+          diagnostics.push({
+            from: argNode.from,
+            to: argNode.to,
+            severity: 'error',
+            message: `Invalid boolean value. Expected TRUE or FALSE, got ${argText}`,
+            source: 'fprime-linter',
+          });
+        }
+      } else {
+        diagnostics.push({
+          from: argNode.from,
+          to: argNode.to,
+          severity: 'error',
+          message: `Incorrect type - expected boolean but got ${argType}`,
+          source: 'fprime-linter',
+        });
+      }
+      break;
+    }
+
+    case 'enum': {
+      // Enums can be identifiers or strings
+      if (argType !== FPRIME_NODES.String && argType !== FPRIME_NODES.Identifier) {
+        diagnostics.push({
+          from: argNode.from,
+          to: argNode.to,
+          severity: 'error',
+          message: `Incorrect type - expected enum (string or identifier) but got ${argType}`,
+          source: 'fprime-linter',
+        });
+        break;
+      }
+
+      // Validate enum value - check enum_name in enumMap first, then fall back to range array
+      let validSymbols: string[] | undefined;
+
+      if (argDef.enum_name && commandDictionary.enumMap) {
+        const enumDef = commandDictionary.enumMap[argDef.enum_name];
+        if (enumDef) {
+          validSymbols = enumDef.values.map(v => v.symbol);
+        }
+      }
+
+      // Fall back to range array if enum_name didn't provide symbols
+      if (!validSymbols && argDef.range && Array.isArray(argDef.range)) {
+        validSymbols = argDef.range;
+      }
+
+      // If we have valid symbols, validate the argument value
+      if (validSymbols && validSymbols.length > 0) {
+        const argValue = argType === FPRIME_NODES.String ? argText.replace(/^"|"$/g, '') : argText;
+
+        if (!validSymbols.includes(argValue)) {
+          const closestMatch = closestStrings(argValue, validSymbols, 1)[0];
+          diagnostics.push({
+            from: argNode.from,
+            to: argNode.to,
+            severity: 'error',
+            message: `Invalid enum value. Expected one of: ${validSymbols.join(', ')}`,
+            source: 'fprime-linter',
+            actions: closestMatch
+              ? [
+                  {
+                    name: `Change to ${closestMatch}`,
+                    apply(view, from, to) {
+                      const replacement = argType === FPRIME_NODES.String ? `"${closestMatch}"` : closestMatch;
+                      view.dispatch({
+                        changes: { from, to, insert: replacement },
+                      });
+                    },
+                  },
+                ]
+              : [],
+          });
+        }
+      }
+      break;
+    }
+
+    case 'fixed_string':
+    case 'var_string': {
+      // Strings must be quoted in F-Prime
+      if (argType !== FPRIME_NODES.String) {
+        diagnostics.push({
+          from: argNode.from,
+          to: argNode.to,
+          severity: 'error',
+          message: `Incorrect type - expected string but got ${argType}`,
+          source: 'fprime-linter',
+        });
+      }
+      break;
+    }
+
+    default:
+      // Unknown argument type - skip validation
+      break;
   }
 
   return diagnostics;

@@ -259,6 +259,326 @@ R00:00:01.000 CMD 1, 2, 3
     });
   });
 
+  describe('argument type validation', () => {
+    const mockCommandDictionary = {
+      fswCommandMap: {
+        'CMD_WITH_INT': {
+          stem: 'CMD_WITH_INT',
+          arguments: [{ name: 'value', arg_type: 'integer', range: { min: 0, max: 100 } }],
+        },
+        'CMD_WITH_FLOAT': {
+          stem: 'CMD_WITH_FLOAT',
+          arguments: [{ name: 'value', arg_type: 'float', range: { min: 0.0, max: 10.0 } }],
+        },
+        'CMD_WITH_STRING': {
+          stem: 'CMD_WITH_STRING',
+          arguments: [{ name: 'message', arg_type: 'var_string' }],
+        },
+        'CMD_WITH_BOOL': {
+          stem: 'CMD_WITH_BOOL',
+          arguments: [{ name: 'enabled', arg_type: 'boolean' }],
+        },
+        'CMD_WITH_ENUM': {
+          stem: 'CMD_WITH_ENUM',
+          arguments: [{ name: 'mode', arg_type: 'enum', enum_name: 'ModeEnum' }],
+        },
+        'CMD_WITH_HEX': {
+          stem: 'CMD_WITH_HEX',
+          arguments: [{ name: 'address', arg_type: 'unsigned', range: { min: 0, max: 255 } }],
+        },
+      },
+      hwCommandMap: {},
+      fswCommands: [
+        { stem: 'CMD_WITH_INT' },
+        { stem: 'CMD_WITH_FLOAT' },
+        { stem: 'CMD_WITH_STRING' },
+        { stem: 'CMD_WITH_BOOL' },
+        { stem: 'CMD_WITH_ENUM' },
+        { stem: 'CMD_WITH_HEX' },
+      ],
+      hwCommands: [],
+      enumMap: {
+        ModeEnum: {
+          name: 'ModeEnum',
+          values: [
+            { symbol: 'MODE_A', numeric: 0 },
+            { symbol: 'MODE_B', numeric: 1 },
+            { symbol: 'MODE_C', numeric: 2 },
+          ],
+        },
+      },
+    };
+
+    function lintWithDict(doc: string) {
+      const fprimeLanguage = LRLanguage.define({
+        parser: fprimeParser,
+      });
+
+      const state = EditorState.create({
+        doc,
+        extensions: [new LanguageSupport(fprimeLanguage)],
+      });
+
+      const view = { state } as EditorView;
+      return fprimeLinter(view, mockCommandDictionary);
+    }
+
+    describe('integer arguments', () => {
+      it('should not flag valid integer argument', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_INT 50\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag string when integer expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_INT "not a number"\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+        expect(diagnostics[0].message).toContain('number');
+      });
+
+      it('should flag identifier when integer expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_INT SOME_ID\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+      });
+
+      it('should flag integer out of range (too high)', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_INT 150\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('out of range');
+      });
+
+      it('should flag integer out of range (negative when min is 0)', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_INT -5\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('out of range');
+      });
+    });
+
+    describe('float arguments', () => {
+      it('should not flag valid float argument', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_FLOAT 5.5\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag float out of range', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_FLOAT 15.0\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('out of range');
+      });
+
+      it('should flag string when float expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_FLOAT "not a number"\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+      });
+    });
+
+    describe('string arguments', () => {
+      it('should not flag valid string argument', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_STRING "hello"\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag number when string expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_STRING 42\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+        expect(diagnostics[0].message).toContain('string');
+      });
+
+      it('should flag identifier when string expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_STRING UNQUOTED\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+        expect(diagnostics[0].message).toContain('string');
+      });
+    });
+
+    describe('boolean arguments', () => {
+      it('should not flag valid boolean string TRUE', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL "TRUE"\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should not flag valid boolean string FALSE', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL "FALSE"\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should not flag valid boolean identifier TRUE', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL TRUE\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should not flag valid boolean identifier FALSE', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL FALSE\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag invalid boolean string value', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL "yes"\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Invalid boolean');
+      });
+
+      it('should flag invalid boolean identifier value', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL yes\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Invalid boolean');
+      });
+
+      it('should flag number when boolean expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_BOOL 1\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+        expect(diagnostics[0].message).toContain('boolean');
+      });
+    });
+
+    describe('enum arguments', () => {
+      it('should not flag valid enum identifier', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_ENUM MODE_A\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should not flag valid enum string', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_ENUM "MODE_B"\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag invalid enum value', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_ENUM MODE_INVALID\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Invalid enum value');
+        expect(diagnostics[0].message).toContain('MODE_A');
+      });
+
+      it('should provide suggestion for similar enum value', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_ENUM MODE_AA\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].actions).toBeDefined();
+        expect(diagnostics[0].actions?.length).toBeGreaterThan(0);
+        expect(diagnostics[0].actions?.[0].name).toContain('MODE_A');
+      });
+
+      it('should flag number when enum expected', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_ENUM 0\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+        expect(diagnostics[0].message).toContain('enum');
+      });
+    });
+
+    describe('hex number arguments', () => {
+      it('should not flag valid hex number', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_HEX 0xFF\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should not flag hex number at boundary', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_HEX 0x00\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag hex number out of range', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_WITH_HEX 0x200\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('out of range');
+      });
+    });
+
+    describe('arguments without ranges', () => {
+      const mockCommandDictionary = {
+        fswCommandMap: {
+          'CMD_NO_RANGE': {
+            stem: 'CMD_NO_RANGE',
+            arguments: [
+              { name: 'value', arg_type: 'integer', range: null },
+              { name: 'message', arg_type: 'var_string' },
+            ],
+          },
+        },
+        hwCommandMap: {},
+        fswCommands: [{ stem: 'CMD_NO_RANGE' }],
+        hwCommands: [],
+        enumMap: {},
+      };
+
+      function lintWithDict(doc: string) {
+        const fprimeLanguage = LRLanguage.define({
+          parser: fprimeParser,
+        });
+
+        const state = EditorState.create({
+          doc,
+          extensions: [new LanguageSupport(fprimeLanguage)],
+        });
+
+        const view = { state } as EditorView;
+        return fprimeLinter(view, mockCommandDictionary);
+      }
+
+      it('should not flag valid integer without range constraint', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_RANGE 999999, "test"\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should still flag wrong type even without range', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_NO_RANGE "not_a_number", "test"\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Incorrect type');
+      });
+    });
+
+    describe('enum with range array instead of enum_name', () => {
+      const mockCommandDictionary = {
+        fswCommandMap: {
+          'CMD_ENUM_RANGE': {
+            stem: 'CMD_ENUM_RANGE',
+            arguments: [
+              {
+                name: 'mode',
+                arg_type: 'enum',
+                range: ['OPTION_X', 'OPTION_Y', 'OPTION_Z'],
+              },
+            ],
+          },
+        },
+        hwCommandMap: {},
+        fswCommands: [{ stem: 'CMD_ENUM_RANGE' }],
+        hwCommands: [],
+        enumMap: {},
+      };
+
+      function lintWithDict(doc: string) {
+        const fprimeLanguage = LRLanguage.define({
+          parser: fprimeParser,
+        });
+
+        const state = EditorState.create({
+          doc,
+          extensions: [new LanguageSupport(fprimeLanguage)],
+        });
+
+        const view = { state } as EditorView;
+        return fprimeLinter(view, mockCommandDictionary);
+      }
+
+      it('should accept valid enum value from range array', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_ENUM_RANGE OPTION_X\n');
+        expect(diagnostics.length).toBe(0);
+      });
+
+      it('should flag invalid enum value not in range array', () => {
+        const diagnostics = lintWithDict('R00:00:01.000 CMD_ENUM_RANGE INVALID\n');
+        expect(diagnostics.length).toBeGreaterThan(0);
+        expect(diagnostics[0].message).toContain('Invalid enum value');
+        expect(diagnostics[0].message).toContain('OPTION_X');
+      });
+    });
+  });
+
   describe('malformed time tag detection', () => {
     it('should flag malformed absolute time with wrong day digits', () => {
       const diagnostics = lint('A2026-75T21:12:40.123 CMD\n');
