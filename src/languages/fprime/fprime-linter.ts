@@ -151,7 +151,7 @@ function createErrorDiagnostic(node: SyntaxNode, text: string, view: EditorView)
         from: node.from,
         to: node.from + 1, // Make it at least 1 character wide for visibility
         severity,
-        message: 'Missing comma between arguments',
+        message,
         source: 'fprime-linter',
       };
     }
@@ -309,7 +309,9 @@ export function validateCommandDictionary(
   const expectedArgCount = dictionaryCommand.arguments?.length ?? 0;
 
   if (argsNode) {
-    const argNodes = getChildrenNode(argsNode);
+    // Get argument nodes, excluding error nodes and commas
+    const allChildren = getChildrenNode(argsNode);
+    const argNodes = allChildren.filter(node => !node.type.isError && node.name !== ',');
     const actualArgCount = argNodes.length;
 
     if (actualArgCount > expectedArgCount) {

@@ -265,6 +265,17 @@ R00:00:01.000 CMD 1, 2, 3
       // Should have no errors - comment should not be counted as an argument
       expect(diagnostics.length).toBe(0);
     });
+
+    it('should report missing comma not extra argument when comma is missing', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 SET_VALUE 42 3.14\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      // Should say "missing comma" not "Extra argument"
+      const hasCommaMessage = diagnostics.some(d => d.message.toLowerCase().includes('comma'));
+      const hasExtraMessage = diagnostics.some(d => d.message.toLowerCase().includes('extra'));
+      expect(hasCommaMessage).toBe(true);
+      expect(hasExtraMessage).toBe(false);
+    });
+
   });
 
   describe('argument type validation', () => {
