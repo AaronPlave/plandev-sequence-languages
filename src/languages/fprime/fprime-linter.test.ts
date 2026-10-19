@@ -239,6 +239,14 @@ R00:00:01.000 CMD 1, 2, 3
       expect(diagnostics[0].message).toContain('Missing');
     });
 
+    it('should provide quick fix for missing arguments', () => {
+      const diagnostics = lintWithDict('R00:00:01.000 SET_VALUE 42\n');
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics[0].actions).toBeDefined();
+      expect(diagnostics[0].actions?.length).toBeGreaterThan(0);
+      expect(diagnostics[0].actions?.[0].name).toContain('Add missing');
+    });
+
     it('should not flag correct number of arguments', () => {
       const diagnostics = lintWithDict('R00:00:01.000 SET_VALUE 42, 3.14\n');
       expect(diagnostics.length).toBe(0);

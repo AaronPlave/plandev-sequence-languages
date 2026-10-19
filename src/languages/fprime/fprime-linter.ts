@@ -6,6 +6,7 @@ import type { CommandDictionary } from '@nasa-jpl/plandev-ampcs';
 import { distance } from 'fastest-levenshtein';
 import { getChildrenNode, getFromAndTo } from '../../utils/tree-utils.js';
 import { pluralize } from '../../utils/string.js';
+import { fswCommandArgDefault } from '../../utils/sequence-utils.js';
 import { FPRIME_NODES } from './fprime-grammar-constants.js';
 
 /**
@@ -351,6 +352,11 @@ export function validateCommandDictionary(
     } else if (actualArgCount < expectedArgCount) {
       // Too few arguments
       const commandArgs = `argument${pluralize(expectedArgCount - actualArgCount)}`;
+      const missingArgs = dictionaryCommand.arguments?.slice(actualArgCount) || [];
+
+      // Generate placeholder values for missing arguments
+      const placeholders = missingArgs.map(arg => fswCommandArgDefault(arg, commandDictionary.enumMap));
+      const insertText = (actualArgCount > 0 ? ', ' : ' ') + placeholders.join(', ');
 
       diagnostics.push({
         from: argsNode.from,
@@ -358,6 +364,16 @@ export function validateCommandDictionary(
         severity: 'error',
         message: `Missing ${commandArgs}, definition has ${expectedArgCount}, but ${actualArgCount} ${pluralize(actualArgCount) ? 'are' : 'is'} present`,
         source: 'fprime-linter',
+        actions: [
+          {
+            name: `Add missing ${commandArgs}`,
+            apply(view, from, to) {
+              view.dispatch({
+                changes: { from: to, to, insert: insertText },
+              });
+            },
+          },
+        ],
       });
     } else {
       // Correct number of arguments - validate types and values
@@ -373,6 +389,11 @@ export function validateCommandDictionary(
   } else if (expectedArgCount > 0) {
     // No arguments provided but command expects some
     const commandArgs = `argument${pluralize(expectedArgCount)}`;
+    const missingArgs = dictionaryCommand.arguments || [];
+
+    // Generate placeholder values for missing arguments
+    const placeholders = missingArgs.map(arg => fswCommandArgDefault(arg, commandDictionary.enumMap));
+    const insertText = ' ' + placeholders.join(', ');
 
     diagnostics.push({
       from: mnemonicNode.to,
@@ -380,6 +401,16 @@ export function validateCommandDictionary(
       severity: 'error',
       message: `Missing ${commandArgs}, definition has ${expectedArgCount}, but 0 are present`,
       source: 'fprime-linter',
+      actions: [
+        {
+          name: `Add missing ${commandArgs}`,
+          apply(view, from, to) {
+            view.dispatch({
+              changes: { from: to, to, insert: insertText },
+            });
+          },
+        },
+      ],
     });
   }
 
