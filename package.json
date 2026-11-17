@@ -34,7 +34,8 @@
     "satf": "rimraf ./src/languages/satf/grammar/satf-sasf.grammar.js; lezer-generator ./src/languages/satf/grammar/satf-sasf.grammar -o ./src/languages/satf/grammar/satf-sasf.grammar.js",
     "seqn": "rimraf ./src/languages/seq-n/seq-n.grammar.js; lezer-generator ./src/languages/seq-n/seq-n.grammar -o ./src/languages/seq-n/seq-n.grammar.js",
     "vml": "rimraf ./src/languages/vml/vml.grammar.js; lezer-generator ./src/languages/vml/vml.grammar -o ./src/languages/vml/vml.grammar.js",
-    "grammar-builder": "npm run satf; npm run seqn && npm run vml",
+    "fprime-seq": "rimraf ./src/languages/fprime-seq/fprime-seq.grammar.js; lezer-generator ./src/languages/fprime-seq/fprime-seq.grammar -o ./src/languages/fprime-seq/fprime-seq.grammar.js",
+    "grammar-builder": "npm run satf; npm run seqn && npm run vml && npm run fprime-seq",
     "test": "npm run grammar-builder && vitest run",
     "build": "npm run clean; npm run grammar-builder; tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
     "clean": "rimraf ./dist",
@@ -69,10 +70,12 @@
     "vitest": "^3.1.1"
   },
   "dependencies": {
-    "@codemirror/autocomplete": "^6.19.0",
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.9.0",
+    "@codemirror/lang-rust": "^6.0.2",
     "@codemirror/language": "^6.11.0",
     "@codemirror/lint": "^6.8.5",
+    "@codemirror/lsp-client": "^6.3.0",
     "@codemirror/view": "^6.38.2",
     "@lezer/common": "^1.2.3",
     "@lezer/lr": "^1.4.2",

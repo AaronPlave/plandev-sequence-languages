@@ -27,6 +27,23 @@ export type {
 export type { BaseLanguage, InputLanguage, OutputLanguage } from './interfaces/language.js';
 
 export type { PhoenixAdaptation } from './interfaces/adaptation.js';
+export { getInputLanguage } from './interfaces/adaptation.js';
+
+export {
+  fprimeSeqLanguage,
+  fprimeSeqParser,
+  FprimeSeqCommandInfoMapper,
+  getFprimeSeqExtensions,
+} from './languages/fprime-seq/language.js';
+export { validateFprimeSeq, fprimeSeqArgDefault } from './languages/fprime-seq/fprime-seq-validate.js';
+export { getFprimeAdaptation } from './languages/fprime-seq/adaptation.js';
+export {
+  fprimeRustLanguage,
+  FprimeRustCommandInfoMapper,
+  getFprimeRustProfile,
+  rustCallStem,
+  type FprimeRustLanguageOptions,
+} from './languages/fprime-rust/language.js';
 
 export type { TimeTagInfo, StringArg, ArgTextDef, CommandInfoMapper } from './interfaces/command-info-mapper.js';
 

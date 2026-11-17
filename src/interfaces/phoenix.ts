@@ -44,4 +44,9 @@ export interface PhoenixContext {
   channelDictionary: ChannelDictionary | null;
   parameterDictionaries: ParameterDictionary[];
   librarySequences: LibrarySequenceSignature[];
+  /**
+   * The workspace file being edited, when there is one. Lets a language address the document
+   * outside the editor, e.g. as a language server document URI.
+   */
+  sequenceFile?: { path: string; workspaceId: number };
 }

@@ -49,6 +49,9 @@ export interface CommandInfoMapper {
 
   getDefaultValueForArgumentDef(argDef: FswCommandArgument, enumMap: EnumMap): string;
 
+  /** How an enum constant is written as an argument literal. Default: a quoted string (SeqN). */
+  formatEnumValue?(symbol: string): string;
+
   /** finds the node in the parse tree containing the name */
   getNameNode(stepNode: SyntaxNode | null): SyntaxNode | null;
 

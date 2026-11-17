@@ -1,0 +1,55 @@
+// F Prime command sequence (`.seq`), as accepted by `fprime-seqgen`.
+// Mirrors fprime-gds `common/parsers/grammar.lark`: every command line is
+// `<time tag> <mnemonic> [args]`, args optionally comma-separated.
+
+@top Sequence { Command? (newline Command?)* }
+
+Command { TimeTag Stem Args }
+
+Stem { Identifier }
+
+Args { (Arg ","?)* }
+
+Arg { Number | String | Boolean | Enum | Array | Struct }
+
+Enum { Identifier }
+
+Array { "[" (Arg ("," Arg)* ","?)? "]" }
+
+Struct { "{" (Member ("," Member)* ","?)? "}" }
+
+Member { MemberName ":" Arg }
+
+MemberName { Identifier }
+
+Boolean { @specialize<Identifier, "true" | "True" | "TRUE" | "false" | "False" | "FALSE"> }
+
+@skip { space | Comment | LineContinuation }
+
+@tokens {
+  space { $[ \t\f]+ }
+  newline { "\r"? "\n" }
+  Comment { ";" ![\n]* }
+  LineContinuation { "\\" $[ \t\f]* "\n" }
+
+  digit { $[0-9] }
+  hms { digit digit ":" digit digit ":" digit digit ("." digit+)? }
+  TimeTag { "R" $[ \t]* hms | "A" $[ \t]* digit digit digit digit "-" digit digit digit "T" hms }
+
+  Identifier { "$"? $[a-zA-Z_] $[a-zA-Z0-9_]* ("." $[a-zA-Z_0-9]+)* }
+
+  sign { $[+\-] }
+  Number {
+    sign? ("0x" | "0X") $[0-9a-fA-F_]+ |
+    sign? digit $[0-9_]* ("." digit+)? ($[eE] sign? digit+)? |
+    sign? "." digit+ ($[eE] sign? digit+)?
+  }
+
+  String { '"' (!["\\\n] | "\\" _)* '"' | "'" (!['\\\n] | "\\" _)* "'" }
+
+  @precedence { TimeTag, Identifier }
+
+  "[" "]" "{" "}" "," ":"
+}
+
+@detectDelim
