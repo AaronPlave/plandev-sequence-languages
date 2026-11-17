@@ -41,6 +41,7 @@
     "clean": "rimraf ./dist",
     "format:check": "prettier --check ./src",
     "format:write": "prettier --write ./src",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "files": [

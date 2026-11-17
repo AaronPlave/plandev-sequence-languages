@@ -57,6 +57,30 @@ R00:00:05 MathProject.mathReceiver.FACTOR_PRM_SET 3.25
     ]);
   });
 
+  // Each case below compiles with fprime-seqgen 4.4.1 or fails there without a located message.
+  it('catches what fprime-seqgen accepts or crashes on', () => {
+    expect(messages('R00:00:00 CdhCore.cmdDisp.CMD_NO_OP_STRING')).toEqual([
+      'CdhCore.cmdDisp.CMD_NO_OP_STRING | CdhCore.cmdDisp.CMD_NO_OP_STRING takes 1 argument(s) (arg1), got 0',
+    ]);
+    expect(messages('R00:00:00 MathProject.mathSender.DO_MATH 1e39, ADD, 2.0')).toEqual([
+      "1e39 | 'val1' 1e39 is out of range for F32",
+    ]);
+    expect(messages('R00:00:00 MathProject.mathSender.DO_MATH 3.4e38, ADD, -3.4e38')).toEqual([]);
+  });
+
+  it('checks string sizes and enum spelling the way fprime-seqgen does', () => {
+    const forty = 'x'.repeat(40);
+    expect(messages(`R00:00:00 CdhCore.cmdDisp.CMD_NO_OP_STRING "${forty}"`)).toEqual([]);
+    expect(messages(`R00:00:00 CdhCore.cmdDisp.CMD_NO_OP_STRING "${forty}y"`)).toEqual([
+      `"${forty}y" | 'arg1' is 41 bytes; the dictionary allows at most 40`,
+    ]);
+    // Multi-byte characters count as their UTF-8 size.
+    expect(messages(`R00:00:00 CdhCore.cmdDisp.CMD_NO_OP_STRING "${'é'.repeat(21)}"`)[0]).toMatch(/42 bytes/);
+    expect(messages('R00:00:00 MathProject.mathSender.DO_MATH 1.0, MathProject.MathOp.ADD, 2.0')[0]).toMatch(
+      /is not a MathProject.MathOp constant/,
+    );
+  });
+
   it('builds default arguments in .seq syntax', () => {
     const doMath = dictionary.fswCommandMap['MathProject.mathSender.DO_MATH'];
     expect(doMath.arguments.map(a => fprimeSeqArgDefault(a, dictionary.enumMap))).toEqual(['0.0', 'ADD', '0.0']);

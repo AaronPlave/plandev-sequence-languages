@@ -12,8 +12,9 @@ export type FprimeSeqDiagnostic = {
  * Checks an F Prime `.seq` against the command dictionary, as far as the dictionary allows:
  * known mnemonic, argument count, and each argument's type (integer width, enum membership,
  * array length, struct members). F Prime dictionaries carry no operational argument ranges,
- * so those cannot be checked here. `fprime-seqgen` stays the authority; this gives earlier,
- * located feedback, and catches extra arguments, which seqgen silently drops.
+ * so those cannot be checked here. The F Prime compile Action runs this before `fprime-seqgen`,
+ * because seqgen (fprime-gds 4.4) silently accepts missing and extra arguments and crashes on
+ * out-of-range F32 values; everything checked here is also rejected or mis-encoded by seqgen.
  */
 export function validateFprimeSeq(
   text: string,
@@ -131,22 +132,32 @@ export function validateArgument(
       break;
     }
     case 'float':
-    case 'numeric':
-      expect('Number', 'a number');
+    case 'numeric': {
+      if (!expect('Number', 'a number')) break;
+      const n = Number(raw.replace(/_/g, ''));
+      if (def.arg_type === 'float' && def.bit_length === 32 && Math.abs(n) > F32_MAX) {
+        error(`'${def.name}' ${raw} is out of range for F32`);
+      }
       break;
+    }
     case 'boolean':
       expect('Boolean', 'true or false');
       break;
     case 'var_string':
-    case 'fixed_string':
-      expect('String', 'a quoted string');
+    case 'fixed_string': {
+      if (!expect('String', 'a quoted string')) break;
+      const maxBits = def.arg_type === 'var_string' ? def.max_bit_length : null;
+      const bytes = new TextEncoder().encode(unquote(raw)).length;
+      if (maxBits && bytes > maxBits / 8) {
+        error(`'${def.name}' is ${bytes} bytes; the dictionary allows at most ${maxBits / 8}`);
+      }
       break;
+    }
     case 'enum': {
       if (!expect('Enum', `one of the ${def.enum_name} constants`)) break;
       const symbols = enumMap[def.enum_name]?.values.map(v => v.symbol) ?? [];
-      // seqgen accepts the bare constant; allow a qualified one too (`Fw.Enabled.ENABLED`).
-      const symbol = raw.split('.').pop() ?? raw;
-      if (symbols.length && !symbols.includes(symbol)) {
+      // seqgen accepts only the bare constant (`ENABLED`, not `Fw.Enabled.ENABLED`).
+      if (symbols.length && !symbols.includes(raw)) {
         error(`'${raw}' is not a ${def.enum_name} constant: ${symbols.join(', ')}`);
       }
       break;
@@ -188,6 +199,13 @@ export function validateArgument(
     }
   }
   return out;
+}
+
+const F32_MAX = 3.4028234663852886e38;
+
+/** The text of a `.seq` string literal (Python-style escapes, as seqgen reads it). */
+function unquote(raw: string): string {
+  return raw.slice(1, -1).replace(/\\(.)/g, '$1');
 }
 
 function parseInteger(raw: string): bigint | null {

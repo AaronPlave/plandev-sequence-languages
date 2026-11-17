@@ -1,6 +1,6 @@
 import { rust } from '@codemirror/lang-rust';
 import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete';
-import { LSPClient, languageServerExtensions, type Transport } from '@codemirror/lsp-client';
+import { LSPPlugin } from '@codemirror/lsp-client';
 import type { Extension } from '@codemirror/state';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import type {
@@ -10,11 +10,12 @@ import type {
   FswCommandArgument,
   FswCommandArgumentRepeat,
 } from '@nasa-jpl/plandev-ampcs';
-import type { EditorView } from '@codemirror/view';
+import { ViewPlugin, type EditorView } from '@codemirror/view';
 import type { ArgTextDef, CommandInfoMapper, TimeTagInfo } from '../../interfaces/command-info-mapper.js';
 import type { InputLanguage } from '../../interfaces/language.js';
 import type { LibrarySequenceSignature, PhoenixContext } from '../../interfaces/phoenix.js';
 import { fprimeSeqArgDefault } from '../fprime-seq/fprime-seq-validate.js';
+import { getLspConnection, type ConnectionStatus } from './lsp-connection.js';
 
 export type FprimeRustLanguageOptions = {
   /**
@@ -185,45 +186,6 @@ function dictionaryCompletion(context: PhoenixContext) {
   };
 }
 
-/** Raw JSON messages over a WebSocket, as `@codemirror/lsp-client` expects. */
-/** Raw-JSON WebSocket transport; `onClose` fires if an open socket later drops. */
-function webSocketTransport(url: string, onClose: (code: number) => void): Promise<Transport> {
-  return new Promise((resolve, reject) => {
-    const handlers: ((message: string) => void)[] = [];
-    const socket = new WebSocket(url);
-    let opened = false;
-    socket.onmessage = event => handlers.forEach(h => h(event.data.toString()));
-    socket.onclose = event =>
-      opened ? onClose(event.code) : reject(new Error(`Could not connect to Rust language server at ${url}`));
-    socket.onopen = () => {
-      opened = true;
-      resolve({
-        send: message => socket.readyState === WebSocket.OPEN && socket.send(message),
-        subscribe: handler => handlers.push(handler),
-        unsubscribe: handler => handlers.splice(handlers.indexOf(handler) >>> 0, 1),
-      });
-    };
-  });
-}
-
-/**
- * Keep `client` connected: reconnect with backoff when the socket drops (server restart, idle
- * proxy, network). On reconnect the client re-initializes and re-opens its files. The bridge's
- * own refusals (close codes 4xxx: no access, not a Cargo project) are final.
- */
-function keepConnected(client: LSPClient, url: string, attempt = 0) {
-  const retry = () => setTimeout(() => keepConnected(client, url, attempt + 1), Math.min(30000, 1000 * 2 ** attempt));
-  webSocketTransport(url, code => {
-    client.disconnect();
-    if (code < 4000 || code >= 5000) setTimeout(() => keepConnected(client, url), 1000);
-  })
-    .then(transport => client.connect(transport))
-    .catch(e => {
-      console.error(e);
-      retry();
-    });
-}
-
 /** The Cargo project a file belongs to, by Cargo's layout (`<project>/src/...`, `<project>/build.rs`). */
 function cargoProjectOf(path: string): string {
   // ponytail: layout heuristic; the bridge finds the real Cargo.toml, a miss only costs a second session.
@@ -231,24 +193,33 @@ function cargoProjectOf(path: string): string {
 }
 
 /**
- * One LSP client (one rust-analyzer session) per Cargo project, shared by all of its open files,
- * and kept across editor reconfigurations (dictionary reloads etc.).
+ * rust-analyzer for this file, through the session shared by its Cargo project's open editors.
+ * The session lives as long as some editor uses it (plus a grace period), see `LspConnection`.
  */
-const clients = new Map<string, LSPClient>();
-
 function lspExtension(lspUrl: string, context: PhoenixContext): Extension {
   const file = context.sequenceFile;
   if (!file) return [];
   const path = file.path.replace(/^\/+/, '');
-  const key = `${lspUrl}|${file.workspaceId}|${cargoProjectOf(path)}`;
-  let client = clients.get(key);
-  if (!client) {
-    // rust-analyzer can take several seconds on a cold project; don't fail requests at 3 s.
-    client = new LSPClient({ extensions: languageServerExtensions(), rootUri: 'file:///seqdev/', timeout: 20000 });
-    keepConnected(client, `${lspUrl}?workspaceId=${file.workspaceId}&path=${encodeURIComponent(path)}`);
-    clients.set(key, client);
-  }
-  return client.plugin(`file:///seqdev/${file.workspaceId}/${path}`, 'rust');
+  const connection = getLspConnection(
+    `${lspUrl}|${file.workspaceId}|${cargoProjectOf(path)}`,
+    `${lspUrl}?workspaceId=${file.workspaceId}&path=${encodeURIComponent(path)}`,
+  );
+  const usage = ViewPlugin.define(view => {
+    let shown = '';
+    const onStatus = (status: ConnectionStatus) => {
+      // Reconnect attempts are routine; show what needs the user's attention, once.
+      if ('message' in status && status.state !== 'retrying' && status.message !== shown) {
+        shown = status.message;
+        LSPPlugin.get(view)?.reportError('Rust language server', status.message);
+      }
+    };
+    connection.acquire(onStatus);
+    return {
+      destroy: () => connection.release(onStatus),
+      update: update => update.docChanged && connection.poke(),
+    };
+  });
+  return [connection.client.plugin(`file:///seqdev/${file.workspaceId}/${path}`, 'rust'), usage];
 }
 
 export function fprimeRustLanguage(options: FprimeRustLanguageOptions = {}): InputLanguage {
