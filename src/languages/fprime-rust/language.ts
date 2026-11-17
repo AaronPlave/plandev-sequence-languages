@@ -186,42 +186,69 @@ function dictionaryCompletion(context: PhoenixContext) {
 }
 
 /** Raw JSON messages over a WebSocket, as `@codemirror/lsp-client` expects. */
-function webSocketTransport(url: string): Promise<Transport> {
+/** Raw-JSON WebSocket transport; `onClose` fires if an open socket later drops. */
+function webSocketTransport(url: string, onClose: (code: number) => void): Promise<Transport> {
   return new Promise((resolve, reject) => {
     const handlers: ((message: string) => void)[] = [];
     const socket = new WebSocket(url);
+    let opened = false;
     socket.onmessage = event => handlers.forEach(h => h(event.data.toString()));
-    socket.onerror = () => reject(new Error(`Could not connect to Rust language server at ${url}`));
-    socket.onopen = () =>
+    socket.onclose = event =>
+      opened ? onClose(event.code) : reject(new Error(`Could not connect to Rust language server at ${url}`));
+    socket.onopen = () => {
+      opened = true;
       resolve({
-        send: message => socket.send(message),
+        send: message => socket.readyState === WebSocket.OPEN && socket.send(message),
         subscribe: handler => handlers.push(handler),
         unsubscribe: handler => handlers.splice(handlers.indexOf(handler) >>> 0, 1),
       });
+    };
   });
 }
 
 /**
- * One LSP client per document, so each Rust file gets its own rust-analyzer session rooted
- * at its own Cargo project. Kept across editor reconfigurations (dictionary reloads etc.).
+ * Keep `client` connected: reconnect with backoff when the socket drops (server restart, idle
+ * proxy, network). On reconnect the client re-initializes and re-opens its files. The bridge's
+ * own refusals (close codes 4xxx: no access, not a Cargo project) are final.
+ */
+function keepConnected(client: LSPClient, url: string, attempt = 0) {
+  const retry = () => setTimeout(() => keepConnected(client, url, attempt + 1), Math.min(30000, 1000 * 2 ** attempt));
+  webSocketTransport(url, code => {
+    client.disconnect();
+    if (code < 4000 || code >= 5000) setTimeout(() => keepConnected(client, url), 1000);
+  })
+    .then(transport => client.connect(transport))
+    .catch(e => {
+      console.error(e);
+      retry();
+    });
+}
+
+/** The Cargo project a file belongs to, by Cargo's layout (`<project>/src/...`, `<project>/build.rs`). */
+function cargoProjectOf(path: string): string {
+  // ponytail: layout heuristic; the bridge finds the real Cargo.toml, a miss only costs a second session.
+  return /^(.*?)\/(?:src|tests|examples|benches)\//.exec(path)?.[1] ?? path.replace(/\/?[^/]*$/, '');
+}
+
+/**
+ * One LSP client (one rust-analyzer session) per Cargo project, shared by all of its open files,
+ * and kept across editor reconfigurations (dictionary reloads etc.).
  */
 const clients = new Map<string, LSPClient>();
 
 function lspExtension(lspUrl: string, context: PhoenixContext): Extension {
   const file = context.sequenceFile;
   if (!file) return [];
-  const uri = `file:///seqdev/${file.workspaceId}/${file.path.replace(/^\/+/, '')}`;
-  let client = clients.get(uri);
+  const path = file.path.replace(/^\/+/, '');
+  const key = `${lspUrl}|${file.workspaceId}|${cargoProjectOf(path)}`;
+  let client = clients.get(key);
   if (!client) {
-    client = new LSPClient({ extensions: languageServerExtensions(), rootUri: 'file:///seqdev/' });
-    const url = `${lspUrl}?workspaceId=${file.workspaceId}&path=${encodeURIComponent(file.path)}`;
-    const connecting = client;
-    webSocketTransport(url)
-      .then(transport => connecting.connect(transport))
-      .catch(e => console.error(e));
-    clients.set(uri, client);
+    // rust-analyzer can take several seconds on a cold project; don't fail requests at 3 s.
+    client = new LSPClient({ extensions: languageServerExtensions(), rootUri: 'file:///seqdev/', timeout: 20000 });
+    keepConnected(client, `${lspUrl}?workspaceId=${file.workspaceId}&path=${encodeURIComponent(path)}`);
+    clients.set(key, client);
   }
-  return client.plugin(uri, 'rust');
+  return client.plugin(`file:///seqdev/${file.workspaceId}/${path}`, 'rust');
 }
 
 export function fprimeRustLanguage(options: FprimeRustLanguageOptions = {}): InputLanguage {
