@@ -21,7 +21,19 @@ export interface BaseLanguage {
 export interface InputLanguage extends BaseLanguage {
   commandInfoMapper: CommandInfoMapper;
   format?: (view: EditorView, context: PhoenixContext) => void;
+  /** Whether `format` can run in this editor now (e.g. its language server is ready). Default: yes. */
+  canFormat?: (view: EditorView) => boolean;
+  /** Editor commands the UI lists in a menu, so they are discoverable without their shortcuts. */
+  editorCommands?: EditorCommand[];
   getLibrarySequences?: (sequence: UserSequence) => LibrarySequenceSignature[];
+}
+
+export interface EditorCommand {
+  label: string;
+  /** The key binding, for display (the language's own extensions bind it). */
+  shortcut?: string;
+  run: (view: EditorView) => boolean;
+  isEnabled?: (view: EditorView) => boolean;
 }
 
 /**

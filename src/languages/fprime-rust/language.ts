@@ -1,7 +1,24 @@
 import { rust } from '@codemirror/lang-rust';
 import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete';
-import { LSPPlugin } from '@codemirror/lsp-client';
-import type { Extension } from '@codemirror/state';
+import { defaultHighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { forceLinting, type Diagnostic } from '@codemirror/lint';
+import {
+  findReferences,
+  findReferencesKeymap,
+  formatDocument,
+  formatKeymap,
+  hoverTooltips,
+  jumpToDefinition,
+  jumpToDefinitionKeymap,
+  LSPPlugin,
+  renameKeymap,
+  renameSymbol,
+  serverCompletion,
+  serverDiagnostics,
+  signatureHelp,
+  type LSPClientExtension,
+} from '@codemirror/lsp-client';
+import { EditorState, MapMode, StateEffect, StateField, type Extension } from '@codemirror/state';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import type {
   CommandDictionary,
@@ -10,12 +27,22 @@ import type {
   FswCommandArgument,
   FswCommandArgumentRepeat,
 } from '@nasa-jpl/plandev-ampcs';
-import { ViewPlugin, type EditorView } from '@codemirror/view';
-import type { ArgTextDef, CommandInfoMapper, TimeTagInfo } from '../../interfaces/command-info-mapper.js';
+import { EditorView, highlightActiveLine, keymap, lineNumbers, showPanel, ViewPlugin } from '@codemirror/view';
+import type {
+  ArgTextDef,
+  CommandInfoMapper,
+  DictionaryItemAt,
+  TimeTagInfo,
+} from '../../interfaces/command-info-mapper.js';
 import type { InputLanguage } from '../../interfaces/language.js';
-import type { LibrarySequenceSignature, PhoenixContext } from '../../interfaces/phoenix.js';
+import type {
+  CodeHelpStatus,
+  LibrarySequenceSignature,
+  PhoenixContext,
+  PhoenixResources,
+} from '../../interfaces/phoenix.js';
 import { fprimeSeqArgDefault } from '../fprime-seq/fprime-seq-validate.js';
-import { getLspConnection, type ConnectionStatus } from './lsp-connection.js';
+import { getLspConnection, type ConnectionStatus, type LspConnection } from './lsp-connection.js';
 
 export type FprimeRustLanguageOptions = {
   /**
@@ -24,7 +51,39 @@ export type FprimeRustLanguageOptions = {
    * Without it the editor still highlights Rust and completes dictionary commands.
    */
   lspUrl?: string;
+  /**
+   * Mission editor rules, run as one more CodeMirror lint source beside the language server's
+   * diagnostics (both are kept; neither replaces the other). Runs without the language server too.
+   * Set `source` on the diagnostics to say where they come from. See `rustCommandCalls`.
+   */
+  lint?: (view: EditorView, context: PhoenixContext) => Diagnostic[];
 };
+
+/** `A.b.C` → command, `Tlm::A.b.C` → telemetry read, `Prm::A.b.c` → parameter read. */
+export function rustDictionaryCall(calleeText: string): { kind: DictionaryItemAt['kind']; name: string } | null {
+  const match = /^(?:(Cmd|Tlm|Prm)::)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)$/.exec(calleeText.replace(/\s+/g, ''));
+  if (!match) return null;
+  return { kind: match[1] === 'Tlm' ? 'telemetry' : match[1] === 'Prm' ? 'parameter' : 'command', name: match[2] };
+}
+
+/**
+ * Every dictionary-style call in a Rust document, in order: `A.b.C(..)` commands and `Tlm::`/`Prm::`
+ * reads. A building block for mission lint rules; whether a name is in the dictionary is not checked.
+ */
+export function rustCommandCalls(
+  state: EditorState,
+): { from: number; kind: DictionaryItemAt['kind']; name: string; node: SyntaxNode; to: number }[] {
+  const calls: { from: number; kind: DictionaryItemAt['kind']; name: string; node: SyntaxNode; to: number }[] = [];
+  syntaxTree(state).iterate({
+    enter: ref => {
+      const callee = ref.node.firstChild;
+      if (ref.name !== 'CallExpression' || callee?.name !== 'FieldExpression') return;
+      const call = rustDictionaryCall(state.sliceDoc(callee.from, callee.to));
+      if (call) calls.push({ ...call, from: ref.from, node: ref.node, to: ref.to });
+    },
+  });
+  return calls;
+}
 
 /** `Cmd::A.b.C`, `A.b.C` → `A.b.C`; telemetry/parameter reads are not commands. */
 export function rustCallStem(calleeText: string): string | null {
@@ -115,6 +174,22 @@ export class FprimeRustCommandInfoMapper implements CommandInfoMapper {
     return ancestor(node, isCommandCall);
   }
 
+  /** The nearest enclosing call the parcel's dictionaries define; helpers and `x.method()` are skipped. */
+  getDictionaryItemAt(node: SyntaxNode | null, view: EditorView, context: PhoenixContext): DictionaryItemAt | null {
+    for (let n = node; n; n = n.parent) {
+      if (!isCommandCall(n)) continue;
+      const call = rustDictionaryCall(view.state.sliceDoc(n.firstChild!.from, n.firstChild!.to));
+      const known =
+        call?.kind === 'command'
+          ? context.commandDictionary?.fswCommandMap[call.name]
+          : call?.kind === 'telemetry'
+            ? context.channelDictionary?.telemetryMap[call.name]
+            : call?.kind === 'parameter' && context.parameterDictionaries.some(d => d.paramMap[call.name]);
+      if (call && known) return { ...call, node: n };
+    }
+    return null;
+  }
+
   /** Enum constants are bare identifiers. */
   formatEnumValue(symbol: string): string {
     return symbol;
@@ -166,12 +241,16 @@ export class FprimeRustCommandInfoMapper implements CommandInfoMapper {
   }
 }
 
-/** Dictionary command completion, used when no language server is configured. */
+/**
+ * Dictionary command completion: always without a language server, and until rust-analyzer is
+ * ready with one (then it completes the same commands from the generated API, so this steps aside).
+ */
 function dictionaryCompletion(context: PhoenixContext) {
   return (completion: CompletionContext): CompletionResult | null => {
     const word = completion.matchBefore(/[\w.]*/);
     const dictionary = context.commandDictionary;
     if (!dictionary || !word || (word.from === word.to && !completion.explicit)) return null;
+    if (completion.view && isCodeHelpReady(completion.view)) return null;
     return {
       from: word.from,
       options: dictionary.fswCommands.map(command => ({
@@ -192,50 +271,266 @@ function cargoProjectOf(path: string): string {
   return /^(.*?)\/(?:src|tests|examples|benches)\//.exec(path)?.[1] ?? path.replace(/\/?[^/]*$/, '');
 }
 
+/** The language-server connection an editor uses, for readiness checks by commands and completion. */
+const editorConnections = new WeakMap<EditorView, LspConnection>();
+
+function isCodeHelpReady(view: EditorView): boolean {
+  return editorConnections.get(view)?.status.state === 'ready';
+}
+
+function codeHelpStatus(status: ConnectionStatus): CodeHelpStatus {
+  switch (status.state) {
+    case 'ready':
+      return { state: 'ready' };
+    case 'connecting':
+    case 'connected':
+    case 'retrying':
+      return { state: 'preparing' };
+    default:
+      return { message: status.message, state: 'unavailable' };
+  }
+}
+
+/**
+ * rust-analyzer diagnostics as one lint source among others (mission rules), instead of
+ * lsp-client's own handler, which replaces every diagnostic in the editor on each publish.
+ * Kept mapped through edits until the server publishes again.
+ */
+const setServerDiagnostics = StateEffect.define<Diagnostic[]>();
+const serverDiagnosticsField = StateField.define<Diagnostic[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(setServerDiagnostics)) return effect.value;
+    if (!tr.docChanged || !value.length) return value;
+    if (tr.isUserEvent('file.open')) return []; // another file loaded into this editor
+    // Like CodeMirror's own diagnostics: one whose text was deleted goes, until the server re-checks.
+    return value.flatMap(d => {
+      const from = tr.changes.mapPos(d.from, -1, MapMode.TrackDel);
+      const to = tr.changes.mapPos(d.to, 1, MapMode.TrackDel);
+      return from === null || to === null ? [] : [{ ...d, from, to }];
+    });
+  },
+});
+
+const severities = ['error', 'error', 'warning', 'info', 'hint'] as const;
+
+function lintedServerDiagnostics(): LSPClientExtension {
+  return {
+    ...serverDiagnostics(), // client capability, and its sync of edits so the server re-checks them
+    notificationHandlers: {
+      'textDocument/publishDiagnostics': (client, params) => {
+        const file = client.workspace.getFile(params.uri);
+        if (!file || (params.version != null && params.version !== file.version)) return false;
+        const view = file.getView();
+        const plugin = view && LSPPlugin.get(view);
+        if (!view || !plugin) return false;
+        const at = (position: { character: number; line: number }) =>
+          plugin.unsyncedChanges.mapPos(plugin.fromPosition(position, plugin.syncedDoc));
+        const diagnostics: Diagnostic[] = params.diagnostics.map(
+          (d: {
+            message: string;
+            range: { end: { character: number; line: number }; start: { character: number; line: number } };
+            severity?: number;
+            source?: string;
+          }) => ({
+            from: at(d.range.start),
+            message: d.message,
+            severity: severities[d.severity ?? 1] ?? 'error',
+            source: d.source ?? 'language server',
+            to: at(d.range.end),
+          }),
+        );
+        view.dispatch({ effects: setServerDiagnostics.of(diagnostics) });
+        forceLinting(view);
+        return true;
+      },
+    },
+  };
+}
+
+const clientExtensions = [
+  serverCompletion(),
+  hoverTooltips(),
+  // In an array: lsp-client keeps only arrays and `{extension}` objects, and a bare keymap is
+  // neither with @codemirror/state < 6.6 (SeqDev's), so F12 & co. were silently dropped.
+  [keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap])],
+  signatureHelp(),
+  lintedServerDiagnostics(),
+];
+
+/**
+ * Read-only view of a source rust-analyzer points at outside the workspace: the API generated from
+ * the dictionary, the F Prime crates, the standard library. Shown in a panel of the editor, whose
+ * own EditorView is what Go to Definition moves the cursor in.
+ */
+const showSource = StateEffect.define<{ text: string; title: string } | null>();
+const sourceViews = new WeakMap<EditorView, EditorView>();
+const sourcePanel = StateField.define<{ text: string; title: string } | null>({
+  create: () => null,
+  provide: field =>
+    showPanel.from(field, source =>
+      source
+        ? view => {
+            const dom = document.createElement('div');
+            dom.className = 'cm-seqdev-source';
+            dom.setAttribute('role', 'region');
+            dom.setAttribute('aria-label', source.title);
+            const header = dom.appendChild(document.createElement('div'));
+            header.className = 'cm-seqdev-source-header';
+            header.appendChild(document.createElement('span')).textContent = source.title;
+            const close = header.appendChild(document.createElement('button'));
+            close.type = 'button';
+            close.textContent = 'Close';
+            close.onclick = () => view.dispatch({ effects: showSource.of(null) });
+            const inner = new EditorView({
+              doc: source.text,
+              extensions: [
+                rust(),
+                syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+                lineNumbers(),
+                highlightActiveLine(),
+                EditorState.readOnly.of(true),
+                EditorView.theme({ '&': { height: '30vh' }, '.cm-scroller': { overflow: 'auto' } }),
+              ],
+              parent: dom,
+            });
+            sourceViews.set(view, inner);
+            return {
+              destroy: () => {
+                inner.destroy();
+                if (sourceViews.get(view) === inner) sourceViews.delete(view);
+              },
+              dom,
+              top: false,
+            };
+          }
+        : null,
+    ),
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(showSource)) return effect.value;
+    return tr.isUserEvent('file.open') ? null : value;
+  },
+});
+
+const sourcePanelTheme = EditorView.baseTheme({
+  '.cm-seqdev-source': { borderTop: '1px solid #ddd' },
+  '.cm-seqdev-source-header': {
+    alignItems: 'center',
+    background: '#f5f5f5',
+    display: 'flex',
+    fontFamily: 'sans-serif',
+    fontSize: '12px',
+    justifyContent: 'space-between',
+    padding: '2px 8px',
+  },
+});
+
+function sourceTitle(uri: string): string {
+  const path = decodeURIComponent(uri.replace(/^file:\/\//, ''));
+  if (path.includes('/ra-target/')) return `Generated from the dictionary (read only): ${path.split('/').pop()}`;
+  const library = /\/(?:vendor|rustlib\/src\/rust)\/(.*)$/.exec(path)?.[1] ?? path.split('/').pop();
+  return `Library source (read only): ${library}`;
+}
+
 /**
  * rust-analyzer for this file, through the session shared by its Cargo project's open editors.
  * The session lives as long as some editor uses it (plus a grace period), see `LspConnection`.
  */
-function lspExtension(lspUrl: string, context: PhoenixContext): Extension {
+function lspExtension(lspUrl: string, context: PhoenixContext, resources: PhoenixResources): Extension {
   const file = context.sequenceFile;
   if (!file) return [];
   const path = file.path.replace(/^\/+/, '');
   const connection = getLspConnection(
     `${lspUrl}|${file.workspaceId}|${cargoProjectOf(path)}`,
     `${lspUrl}?workspaceId=${file.workspaceId}&path=${encodeURIComponent(path)}`,
+    { extensions: clientExtensions },
   );
+  const workspacePrefix = `file:///seqdev/${file.workspaceId}/`;
   const usage = ViewPlugin.define(view => {
+    let alive = true;
     let shown = '';
     const onStatus = (status: ConnectionStatus) => {
-      // Reconnect attempts are routine; show what needs the user's attention, once.
-      if ('message' in status && status.state !== 'retrying' && status.message !== shown) {
+      if (!alive) return;
+      if (resources.setCodeHelpStatus) {
+        const effect = resources.setCodeHelpStatus.of(codeHelpStatus(status));
+        // Statuses also arrive while the editor is updating (acquire); never dispatch inside an update.
+        queueMicrotask(() => alive && view.dispatch({ effects: effect }));
+      } else if ('message' in status && status.state !== 'retrying' && status.message !== shown) {
+        // An editor without a status indicator: show what needs the user's attention, once.
         shown = status.message;
         LSPPlugin.get(view)?.reportError('Rust language server', status.message);
       }
     };
+    const displayFile = async (uri: string): Promise<EditorView | null> => {
+      try {
+        if (uri.startsWith(workspacePrefix)) {
+          return (await context.openWorkspaceFile?.(decodeURIComponent(uri.slice(workspacePrefix.length)))) ?? null;
+        }
+        const { text } = await connection.client.request<{ uri: string }, { text: string }>('seqdev/readFile', { uri });
+        view.dispatch({ effects: showSource.of({ text, title: sourceTitle(uri) }) });
+        return sourceViews.get(view) ?? null;
+      } catch (e) {
+        LSPPlugin.get(view)?.reportError('Cannot show the definition', e);
+        return null;
+      }
+    };
+    editorConnections.set(view, connection);
+    connection.displayFile = displayFile;
     connection.acquire(onStatus);
+    onStatus(connection.status);
     return {
-      destroy: () => connection.release(onStatus),
+      destroy: () => {
+        alive = false;
+        if (connection.displayFile === displayFile) connection.displayFile = null;
+        if (editorConnections.get(view) === connection) editorConnections.delete(view);
+        connection.release(onStatus);
+      },
       update: update => update.docChanged && connection.poke(),
     };
   });
-  return [connection.client.plugin(`file:///seqdev/${file.workspaceId}/${path}`, 'rust'), usage];
+  return [
+    connection.client.plugin(`${workspacePrefix}${path}`, 'rust'),
+    usage,
+    serverDiagnosticsField,
+    resources.linter(view => view.state.field(serverDiagnosticsField, false) ?? [], {
+      // Re-run every lint source when the server publishes (forceLinting alone only hurries a pending run).
+      needsRefresh: update => update.transactions.some(tr => tr.effects.some(e => e.is(setServerDiagnostics))),
+    }),
+    sourcePanel,
+    sourcePanelTheme,
+  ];
 }
 
 export function fprimeRustLanguage(options: FprimeRustLanguageOptions = {}): InputLanguage {
+  const { lint, lspUrl } = options;
+  const whenReady = (view: EditorView) => isCodeHelpReady(view);
   return {
     commandInfoMapper: new FprimeRustCommandInfoMapper(),
     fileExtension: '.rs',
-    getEditorExtension: (context: PhoenixContext) => {
+    getEditorExtension: (context: PhoenixContext, resources: PhoenixResources) => {
       const support = rust();
       return [
         support,
-        options.lspUrl
-          ? lspExtension(options.lspUrl, context)
-          : support.language.data.of({ autocomplete: dictionaryCompletion(context) }),
+        support.language.data.of({ autocomplete: dictionaryCompletion(context) }),
+        lint ? resources.linter(view => lint(view, context)) : [],
+        lspUrl ? lspExtension(lspUrl, context, resources) : [],
       ];
     },
     name: 'F Prime Rust',
+    ...(lspUrl
+      ? {
+          canFormat: view =>
+            whenReady(view) && !!LSPPlugin.get(view)?.client.serverCapabilities?.documentFormattingProvider,
+          editorCommands: [
+            { isEnabled: whenReady, label: 'Go to definition', run: jumpToDefinition, shortcut: 'F12' },
+            { isEnabled: whenReady, label: 'Find references', run: findReferences, shortcut: 'Shift+F12' },
+            { isEnabled: whenReady, label: 'Rename symbol', run: renameSymbol, shortcut: 'F2' },
+          ],
+          format: view => {
+            formatDocument(view);
+          },
+        }
+      : {}),
   };
 }
 

@@ -22,11 +22,12 @@ export type {
   PhoenixContext,
   PhoenixResources,
   CreateTooltip,
+  CodeHelpStatus,
 } from './interfaces/phoenix.js';
 
-export type { BaseLanguage, InputLanguage, OutputLanguage } from './interfaces/language.js';
+export type { BaseLanguage, EditorCommand, InputLanguage, OutputLanguage } from './interfaces/language.js';
 
-export type { PhoenixAdaptation } from './interfaces/adaptation.js';
+export type { FileStarter, FileStarterTarget, PhoenixAdaptation } from './interfaces/adaptation.js';
 export { getInputLanguage } from './interfaces/adaptation.js';
 
 export {
@@ -36,16 +37,23 @@ export {
   getFprimeSeqExtensions,
 } from './languages/fprime-seq/language.js';
 export { validateFprimeSeq, fprimeSeqArgDefault } from './languages/fprime-seq/fprime-seq-validate.js';
-export { getFprimeAdaptation } from './languages/fprime-seq/adaptation.js';
+export { getFprimeAdaptation, fprimeSeqStarter } from './languages/fprime-seq/adaptation.js';
 export {
   fprimeRustLanguage,
   FprimeRustCommandInfoMapper,
   getFprimeRustProfile,
   rustCallStem,
+  rustCommandCalls,
   type FprimeRustLanguageOptions,
 } from './languages/fprime-rust/language.js';
 
-export type { TimeTagInfo, StringArg, ArgTextDef, CommandInfoMapper } from './interfaces/command-info-mapper.js';
+export type {
+  TimeTagInfo,
+  StringArg,
+  ArgTextDef,
+  CommandInfoMapper,
+  DictionaryItemAt,
+} from './interfaces/command-info-mapper.js';
 
 export {
   fswCommandArgDefault,

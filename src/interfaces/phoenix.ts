@@ -1,3 +1,4 @@
+import type { StateEffectType } from '@codemirror/state';
 import type { indentService, LRLanguage } from '@codemirror/language';
 import type { linter } from '@codemirror/lint';
 import type { EditorView, hoverTooltip, Tooltip, ViewPlugin } from '@codemirror/view';
@@ -19,6 +20,9 @@ export type LibrarySequenceSignature = {
  */
 export type CreateTooltip = (text: string[], from: number, to?: number) => Tooltip;
 
+/** Language intelligence (e.g. a language server) as the editor shows it to the user. */
+export type CodeHelpStatus = { state: 'preparing' | 'ready' | 'unavailable'; message?: string };
+
 export interface PhoenixResources {
   createTooltip: CreateTooltip;
   indentService: typeof indentService;
@@ -27,6 +31,8 @@ export interface PhoenixResources {
   EditorView: typeof EditorView;
   LRLanguage: typeof LRLanguage;
   ViewPlugin: typeof ViewPlugin;
+  /** Optional: report `CodeHelpStatus` to the editor UI with `view.dispatch({ effects: setCodeHelpStatus.of(status) })`. */
+  setCodeHelpStatus?: StateEffectType<CodeHelpStatus>;
 }
 
 /**
@@ -49,4 +55,10 @@ export interface PhoenixContext {
    * outside the editor, e.g. as a language server document URI.
    */
   sequenceFile?: { path: string; workspaceId: number };
+  /**
+   * Optional: show another file of the workspace in the editor (e.g. for Go to Definition) through
+   * the UI's usual navigation, with its unsaved-changes prompt and permissions. Resolves to the
+   * editor once it holds the file, or null if the user stayed or the file cannot be opened.
+   */
+  openWorkspaceFile?: (path: string) => Promise<EditorView | null>;
 }

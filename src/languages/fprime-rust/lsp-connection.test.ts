@@ -132,4 +132,35 @@ describe('Rust language server connection', () => {
     vi.advanceTimersByTime(120000);
     expect(FakeSocket.all).toHaveLength(1);
   });
+
+  it('is ready only once the server reports it has finished loading, not when the socket opens', async () => {
+    const c = connect();
+    const states: string[] = [];
+    c.acquire(status => states.push(status.state));
+    const socket = FakeSocket.all[0];
+    socket.open();
+    expect(c.status.state).toBe('connected');
+    const initialize = JSON.parse(socket.sent.find(m => m.includes('"initialize"'))!);
+    expect(initialize.params.capabilities.experimental.serverStatusNotification).toBe(true);
+    const status = (quiescent: boolean) =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'experimental/serverStatus',
+          params: { health: 'ok', quiescent },
+        }),
+      });
+    await vi.advanceTimersByTimeAsync(0);
+    status(false);
+    expect(c.status.state).toBe('connected');
+    status(true);
+    expect(c.status.state).toBe('ready');
+    // A reconnect starts over: ready again only after the new session settles.
+    socket.drop(1006);
+    vi.advanceTimersByTime(1000);
+    FakeSocket.all[1].open();
+    expect(c.status.state).toBe('connected');
+    expect(states).toEqual(['connected', 'ready', 'retrying', 'connected']);
+    c.dispose();
+  });
 });

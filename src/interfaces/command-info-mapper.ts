@@ -15,6 +15,9 @@ export type TimeTagInfo = { node: SyntaxNode; text: string } | null | undefined;
 
 export type StringArg = FswCommandArgumentVarString | FswCommandArgumentFixedString;
 
+/** A dictionary-backed construct at the cursor: a command call, a telemetry read or a parameter read. */
+export type DictionaryItemAt = { kind: 'command' | 'telemetry' | 'parameter'; name: string; node: SyntaxNode };
+
 export type ArgTextDef = {
   argDef?: FswCommandArgument;
   children?: ArgTextDef[];
@@ -46,6 +49,13 @@ export interface CommandInfoMapper {
 
   /** ascends parse tree to find scope to display in form editor */
   getContainingCommand(node: SyntaxNode | null): SyntaxNode | null;
+
+  /**
+   * Optional, for languages where most code is not a command (e.g. Rust): the nearest construct
+   * around `node` that the parcel's dictionaries define. When implemented, the panel becomes an
+   * "At cursor" inspector that shows these items and stays neutral about everything else.
+   */
+  getDictionaryItemAt?(node: SyntaxNode | null, view: EditorView, context: PhoenixContext): DictionaryItemAt | null;
 
   getDefaultValueForArgumentDef(argDef: FswCommandArgument, enumMap: EnumMap): string;
 

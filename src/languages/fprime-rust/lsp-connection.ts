@@ -1,4 +1,6 @@
-import { LSPClient, languageServerExtensions, type Transport } from '@codemirror/lsp-client';
+import { LSPClient, languageServerExtensions, type LSPClientExtension, type Transport } from '@codemirror/lsp-client';
+import type { Extension } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 
 /**
  * Close codes the F Prime toolchain service uses (see deployment/fprime/toolchain/server.py in plandev).
@@ -13,8 +15,13 @@ export const CloseCode = {
   Unauthorized: 4401,
 } as const;
 
+/**
+ * `connected`: the socket is open and the server is starting (indexing, building proc macros).
+ * `ready`: the server reported it has finished (rust-analyzer's `experimental/serverStatus`
+ * with `quiescent`), so completion, navigation and formatting give real answers.
+ */
 export type ConnectionStatus =
-  | { state: 'connecting' | 'connected' }
+  | { state: 'connecting' | 'connected' | 'ready' }
   | { state: 'parked' | 'failed' | 'retrying' | 'unreachable'; message: string };
 
 export type ConnectionOptions = {
@@ -23,6 +30,8 @@ export type ConnectionOptions = {
   /** Minimum time between reconnects triggered by edits after an idle/capacity/auth close (default 15 s). */
   parkedRetryMs?: number;
   webSocket?: typeof WebSocket;
+  /** Client extensions; default `languageServerExtensions()`. */
+  extensions?: readonly (Extension | LSPClientExtension)[];
 };
 
 /**
@@ -32,12 +41,12 @@ export type ConnectionOptions = {
  * reconnect: the LSP client re-sends every open document when it connects.
  */
 export class LspConnection {
-  readonly client = new LSPClient({
-    extensions: languageServerExtensions(),
-    rootUri: 'file:///seqdev/',
-    // rust-analyzer can take several seconds on a cold project; don't fail requests at 3 s.
-    timeout: 20000,
-  });
+  readonly client: LSPClient;
+  /**
+   * Shows a file the server points at (Go to Definition into another file). lsp-client's default
+   * workspace can only show files that already have an editor; SeqDev has one editor at a time.
+   */
+  displayFile: ((uri: string) => Promise<EditorView | null>) | null = null;
   status: ConnectionStatus = { state: 'connecting' };
   private attempt = 0;
   private disposed = false;
@@ -52,7 +61,25 @@ export class LspConnection {
     readonly url: string,
     private readonly onDispose: () => void,
     private readonly options: ConnectionOptions = {},
-  ) {}
+  ) {
+    const readiness: LSPClientExtension = {
+      clientCapabilities: { experimental: { serverStatusNotification: true } },
+      notificationHandlers: {
+        'experimental/serverStatus': (_client, params: { quiescent?: boolean }) => {
+          if (params.quiescent && this.status.state === 'connected') this.setStatus({ state: 'ready' });
+          return true;
+        },
+      },
+    };
+    this.client = new LSPClient({
+      // ponytail: readiness comes from rust-analyzer's serverStatus; another server would stay "connected".
+      extensions: [...(options.extensions ?? languageServerExtensions()), readiness],
+      rootUri: 'file:///seqdev/',
+      // rust-analyzer can take several seconds on a cold project; don't fail requests at 3 s.
+      timeout: 20000,
+    });
+    this.client.workspace.displayFile = uri => this.displayFile?.(uri) ?? Promise.resolve(null);
+  }
 
   get isDisposed() {
     return this.disposed;
