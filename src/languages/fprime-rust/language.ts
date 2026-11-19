@@ -32,6 +32,7 @@ import type {
   ArgTextDef,
   CommandInfoMapper,
   DictionaryItemAt,
+  OutlineEntry,
   TimeTagInfo,
 } from '../../interfaces/command-info-mapper.js';
 import type { InputLanguage } from '../../interfaces/language.js';
@@ -125,6 +126,79 @@ export class FprimeRustCommandInfoMapper implements CommandInfoMapper {
       (commandNode?.getChild('ArgList') && this.getArgumentsFromContainer(commandNode.getChild('ArgList')!).length) ??
       0;
     return (hasArgs ? ', ' : '') + values.join(', ');
+  }
+
+  /** A command call statement, the same text dictionary completion inserts. */
+  formatCommandCall(command: FswCommand, enumMap: EnumMap): string {
+    return `${command.stem}(${command.arguments.map(a => fprimeRustArgDefault(a, enumMap)).join(', ')});`;
+  }
+
+  /**
+   * Only inside a block (a function body, loop or branch): after the statement holding the cursor,
+   * or at the cursor between statements. Elsewhere (imports, signatures, attributes) is unsafe.
+   */
+  getCommandInsertPosition(state: EditorState, pos: number): number | null {
+    for (let n: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) {
+      if (n.name === 'Block') return pos;
+      if (n.parent?.name === 'Block') return n.to;
+    }
+    return null;
+  }
+
+  /**
+   * Functions, loops and branches as written, dictionary command calls and telemetry/parameter
+   * reads, and `rsleep`/`asleep` waits. Calls through helpers are listed where the helper is
+   * called, not expanded: this is the source's shape, not an execution trace.
+   */
+  getOutline(state: EditorState, context: PhoenixContext): OutlineEntry[] {
+    const out: OutlineEntry[] = [];
+    const text = (n: SyntaxNode) => state.sliceDoc(n.from, n.to);
+    const loops: Record<string, string> = { ForExpression: 'for', LoopExpression: 'loop', WhileExpression: 'while' };
+    let depth = 0;
+    syntaxTree(state).iterate({
+      enter: ref => {
+        const n = ref.node;
+        let entry: Omit<OutlineEntry, 'depth' | 'from'> | null = null;
+        if (n.name === 'FunctionItem') {
+          entry = {
+            kind: 'function',
+            label: `fn ${n.getChild('BoundIdentifier') ? text(n.getChild('BoundIdentifier')!) : '?'}`,
+          };
+        } else if (loops[n.name]) {
+          entry = {
+            kind: 'loop',
+            label: text(n).split('{')[0].trim().replace(/\s+/g, ' ').slice(0, 60) || loops[n.name],
+          };
+        } else if (n.name === 'IfExpression') {
+          entry = { kind: 'branch', label: text(n).split('{')[0].trim().replace(/\s+/g, ' ').slice(0, 60) };
+        } else if (n.name === 'CallExpression' && n.firstChild) {
+          const callee = text(n.firstChild).replace(/\s+/g, '');
+          const call = n.firstChild.name === 'FieldExpression' ? rustDictionaryCall(callee) : null;
+          const known =
+            call &&
+            (call.kind === 'command'
+              ? context.commandDictionary?.fswCommandMap[call.name]
+              : call.kind === 'telemetry'
+                ? context.channelDictionary?.telemetryMap[call.name]
+                : context.parameterDictionaries.some(d => d.paramMap[call.name]));
+          if (call && known) {
+            entry = { kind: call.kind === 'command' ? 'command' : 'read', label: call.name };
+          } else if (/^(rsleep|asleep)$/.test(callee)) {
+            entry = { kind: 'wait', label: text(n).replace(/\s+/g, ' ') };
+          }
+        }
+        if (entry) {
+          out.push({ ...entry, depth, from: n.from });
+          if (entry.kind === 'command' || entry.kind === 'read' || entry.kind === 'wait') return false;
+          depth++;
+        }
+        return undefined;
+      },
+      leave: ref => {
+        if (ref.name === 'FunctionItem' || ref.name === 'IfExpression' || loops[ref.name]) depth--;
+      },
+    });
+    return out;
   }
 
   getArgumentAppendPosition(node: SyntaxNode | null): number | undefined {

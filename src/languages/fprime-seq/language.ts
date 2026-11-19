@@ -162,6 +162,11 @@ export class FprimeSeqCommandInfoMapper implements CommandInfoMapper {
     return ' ' + values.join(', ');
   }
 
+  /** A step that runs right after the previous one. */
+  formatCommandCall(command: FswCommand, enumMap: EnumMap): string {
+    return `R00:00:00 ${commandSnippet(command, enumMap)}`;
+  }
+
   getArgumentAppendPosition(node: SyntaxNode | null): number | undefined {
     if (node?.name === 'Command') {
       return node.getChild('Args')?.to ?? node.getChild('Stem')?.to;

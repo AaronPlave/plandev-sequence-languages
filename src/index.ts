@@ -53,6 +53,7 @@ export type {
   ArgTextDef,
   CommandInfoMapper,
   DictionaryItemAt,
+  OutlineEntry,
 } from './interfaces/command-info-mapper.js';
 
 export {

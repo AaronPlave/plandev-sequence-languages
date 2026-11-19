@@ -75,6 +75,55 @@ describe('F Prime Rust', () => {
     expect(at('let')).toBeNull();
   });
 
+  it('inserts commands only inside a block, after the statement at the cursor', () => {
+    const mapper = new FprimeRustCommandInfoMapper();
+    const src = 'use fprime::*;\nfn main() {\n    rsleep(1);\n\n}\n';
+    const state = rustState(src);
+    expect(mapper.getCommandInsertPosition(state, src.indexOf('use'))).toBeNull();
+    expect(mapper.getCommandInsertPosition(state, src.indexOf('fn main'))).toBeNull();
+    expect(mapper.getCommandInsertPosition(state, src.indexOf('sleep'))).toBe(
+      src.indexOf('rsleep(1);') + 'rsleep(1);'.length,
+    );
+    expect(mapper.getCommandInsertPosition(state, src.indexOf('\n\n}') + 1)).toBe(src.indexOf('\n\n}') + 1);
+    const command = {
+      arguments: [
+        {
+          arg_type: 'unsigned',
+          bit_length: 32,
+          default_value: null,
+          description: '',
+          name: 'n',
+          range: null,
+          units: '',
+        },
+      ],
+      description: '',
+      stem: 'Ref.cmdDisp.CMD_NO_OP_U32',
+      type: 'fsw_command',
+    } as const;
+    expect(mapper.formatCommandCall(command, {})).toBe('Ref.cmdDisp.CMD_NO_OP_U32(0);');
+  });
+
+  it('outlines functions, control flow, known calls and waits as written', () => {
+    const src = [
+      'fn helper() { rsleep(1); }',
+      'pub fn main() {',
+      '    for i in 0..3 { CdhCore.cmdDisp.CMD_NO_OP_STRING("x"); helper(); }',
+      '    if Tlm::Ref.typeDemo.ScalarU32Ch() > 1 { not.A.Command(); }',
+      '}',
+    ].join('\n');
+    const outline = new FprimeRustCommandInfoMapper().getOutline(rustState(src), context);
+    expect(outline.map(e => [e.depth, e.kind, e.label])).toEqual([
+      [0, 'function', 'fn helper'],
+      [1, 'wait', 'rsleep(1)'],
+      [0, 'function', 'fn main'],
+      [1, 'loop', 'for i in 0..3'],
+      [2, 'command', 'CdhCore.cmdDisp.CMD_NO_OP_STRING'],
+      [1, 'branch', 'if Tlm::Ref.typeDemo.ScalarU32Ch() > 1'],
+      [2, 'read', 'Ref.typeDemo.ScalarU32Ch'],
+    ]);
+  });
+
   it('lists dictionary-style calls for mission rules', () => {
     const state = rustState('fn main() { A.b.C(1); Tlm::A.b.T(); helper(); x.y(); }');
     expect(rustCommandCalls(state).map(c => [c.kind, c.name])).toEqual([

@@ -251,4 +251,9 @@ export class SeqNCommandInfoMapper implements CommandInfoMapper {
   formatArgumentArray(values: string[]): string {
     return ' ' + values.join(' ');
   }
+
+  /** A command-complete (`C`) step, the same text command completion inserts. */
+  formatCommandCall(command: FswCommand, enumMap: EnumMap): string {
+    return ['C', command.stem, ...command.arguments.map(arg => fswCommandArgDefault(arg, enumMap))].join(' ');
+  }
 }

@@ -8,6 +8,7 @@ import type {
   FswCommandArgumentVarString,
   FswCommandArgumentFixedString,
 } from '@nasa-jpl/plandev-ampcs';
+import type { EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import type { LibrarySequenceSignature, PhoenixContext } from './phoenix.js';
 
@@ -17,6 +18,18 @@ export type StringArg = FswCommandArgumentVarString | FswCommandArgumentFixedStr
 
 /** A dictionary-backed construct at the cursor: a command call, a telemetry read or a parameter read. */
 export type DictionaryItemAt = { kind: 'command' | 'telemetry' | 'parameter'; name: string; node: SyntaxNode };
+
+/**
+ * A recognized construct in source order, for a navigable outline. Recognized from the source text:
+ * for languages with control flow it lists what is written, not what will run.
+ */
+export type OutlineEntry = {
+  /** Nesting level, 0 for top level. */
+  depth: number;
+  from: number;
+  kind: 'branch' | 'command' | 'function' | 'loop' | 'read' | 'section' | 'wait';
+  label: string;
+};
 
 export type ArgTextDef = {
   argDef?: FswCommandArgument;
@@ -59,6 +72,23 @@ export interface CommandInfoMapper {
 
   getDefaultValueForArgumentDef(argDef: FswCommandArgument, enumMap: EnumMap): string;
 
+  /**
+   * Optional: a complete command step for `command`, with starter values for its arguments, as the
+   * UI's Insert Command writes it on a line of its own (e.g. `C STEM 1 "x"`). Without it, the UI
+   * offers no insertion for the language.
+   */
+  formatCommandCall?(command: FswCommand, enumMap: EnumMap): string;
+  /**
+   * Optional: where Insert Command may put a new line for a cursor at `pos` — a position on the line
+   * after which the command goes (a blank line is replaced) — or null when there is no safe place.
+   * Default: after the command containing `pos`, else after its line.
+   */
+  getCommandInsertPosition?(state: EditorState, pos: number): number | null;
+  /**
+   * Optional: the document's outline. Without it the UI lists the steps `getContainingCommand`
+   * recognizes, labeled by their time tag and name.
+   */
+  getOutline?(state: EditorState, context: PhoenixContext): OutlineEntry[];
   /** How an enum constant is written as an argument literal. Default: a quoted string (SeqN). */
   formatEnumValue?(symbol: string): string;
 
